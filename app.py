@@ -8,6 +8,7 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, confusion_matrix
 import warnings
 import io
+import numpy as np
 
 warnings.filterwarnings('ignore')
 
@@ -18,41 +19,35 @@ st.set_page_config(
     layout="wide"
 )
 
-# Fungsi untuk memuat dan cache data dengan kategori yang lebih beragam
+# Fungsi untuk memuat dan cache data dengan kategori & mapping kuantitas
 @st.cache_data
 def load_data():
     df = pd.read_csv('retail_sales_dataset.csv')
     df['Date'] = pd.to_datetime(df['Date'])
     
-    # REVISI: Membuat kategori permintaan yang lebih beragam menggunakan Kuantil
-    # Ini akan membagi data 'Quantity' menjadi 5 kelompok dengan jumlah anggota yang kurang lebih sama.
+    # Membuat kategori permintaan yang lebih beragam menggunakan Kuantil
     try:
         quantiles = pd.qcut(df['Quantity'], q=5, labels=False, duplicates='drop')
-        
-        # Definisikan label yang lebih deskriptif
         labels = [
-            'Permintaan Rendah', 
-            'Permintaan Cukup Rendah', 
-            'Permintaan Sedang', 
-            'Permintaan Tinggi', 
-            'Permintaan Sangat Tinggi'
+            'Permintaan Rendah', 'Permintaan Cukup Rendah', 'Permintaan Sedang', 
+            'Permintaan Tinggi', 'Permintaan Sangat Tinggi'
         ]
-        
-        # Petakan label berdasarkan hasil kuantil
-        # Pastikan jumlah label sesuai dengan jumlah kategori unik dari qcut
         unique_quantiles = quantiles.nunique()
         df['Demand'] = pd.qcut(df['Quantity'], q=unique_quantiles, labels=labels[:unique_quantiles])
-
     except ValueError:
-        # Fallback jika qcut gagal (misal, tidak cukup variasi data)
         bins = [0, 1, 2, 3, 4, float('inf')]
         labels = ['Rendah (1)', 'Cukup Rendah (2)', 'Sedang (3)', 'Tinggi (4)', 'Sangat Tinggi (5+)']
         df['Demand'] = pd.cut(df['Quantity'], bins=bins, labels=labels, right=False)
 
     df.dropna(subset=['Demand'], inplace=True)
-    return df
+    
+    # REVISI: Membuat mapping dari Kategori Permintaan ke Kuantitas Median
+    # Ini akan kita gunakan untuk memberikan estimasi jumlah.
+    demand_quantity_map = df.groupby('Demand')['Quantity'].median().to_dict()
 
-df = load_data()
+    return df, demand_quantity_map
+
+df, demand_quantity_map = load_data()
 
 # Sidebar untuk Navigasi
 st.sidebar.title("Navigasi 🧭")
@@ -63,10 +58,14 @@ page = st.sidebar.radio("Pilih Halaman:", ["Dataset & EDA", "Pelatihan Model", "
 # =====================================================================================
 if page == "Dataset & EDA":
     st.title("📊 Analisis Data Eksploratif (EDA)")
-    st.markdown("Halaman ini menampilkan analisis awal dari dataset penjualan ritel, dengan fokus pada produk fashion.")
-
-    if st.checkbox("Tampilkan Dataset Mentah (dengan kategori permintaan baru)"):
+    st.markdown("Halaman ini menampilkan analisis awal dari dataset penjualan ritel.")
+    
+    if st.checkbox("Tampilkan Dataset Mentah (dengan kategori permintaan)"):
         st.write(df.head())
+        
+    st.subheader("Estimasi Kuantitas per Kategori Permintaan")
+    st.info("Berdasarkan data historis, berikut adalah estimasi (median) jumlah unit untuk setiap kategori permintaan:")
+    st.json({k: int(v) for k, v in demand_quantity_map.items()})
 
     st.header("Karakteristik Dataset")
     col1, col2 = st.columns(2)
@@ -77,42 +76,21 @@ if page == "Dataset & EDA":
         st.metric("Jumlah Kategori Produk", f"{df['Product Category'].nunique()}")
         st.metric("Periode Data", f"{df['Date'].min().strftime('%d %B %Y')} - {df['Date'].max().strftime('%d %B %Y')}")
 
-    st.subheader("Informasi dan Statistik Deskriptif")
-    buf = io.StringIO()
-    df.info(buf=buf)
-    st.text(f"Informasi Tipe Data:\n{buf.getvalue()}")
-    st.text("Statistik Deskriptif untuk Fitur Numerik:")
-    st.write(df.describe())
-
     st.header("Visualisasi Data")
-    
     df_clothing = df[df['Product Category'] == 'Clothing']
 
-    # Visualisasi 1: Distribusi Permintaan (Demand) untuk Kategori Pakaian
     st.subheader("Distribusi Tingkat Permintaan untuk Produk Pakaian")
     fig1 = px.histogram(df_clothing, x='Demand', title='Distribusi Tingkat Permintaan Pakaian',
                         color='Demand',
-                        category_orders={"Demand": df_clothing['Demand'].cat.categories.tolist()}) # Urutkan kategori
+                        category_orders={"Demand": sorted(df_clothing['Demand'].unique())})
     st.plotly_chart(fig1, use_container_width=True)
-
-    # Visualisasi 2: Distribusi Umur dan Gender Pelanggan Pakaian
-    st.subheader("Distribusi Demografi Pelanggan Pakaian")
-    fig2 = px.histogram(df_clothing, x='Age', color='Gender', title='Distribusi Umur dan Gender Pelanggan Pakaian',
-                        barmode='group')
-    st.plotly_chart(fig2, use_container_width=True)
-
-    # Visualisasi 3: Tren Penjualan Pakaian dari Waktu ke Waktu
-    st.subheader("Tren Penjualan Pakaian")
-    df_clothing_time = df_clothing.set_index('Date').resample('M')['Total Amount'].sum().reset_index()
-    fig3 = px.line(df_clothing_time, x='Date', y='Total Amount', title='Tren Total Penjualan Pakaian Bulanan', markers=True)
-    st.plotly_chart(fig3, use_container_width=True)
 
 # =====================================================================================
 # Halaman 2: Pelatihan Model
 # =====================================================================================
 elif page == "Pelatihan Model":
     st.title("🤖 Hasil Pelatihan Model Machine Learning")
-    st.markdown("Halaman ini menunjukkan hasil pelatihan model **K-Nearest Neighbors (KNN)** dan **Naive Bayes** untuk memprediksi tingkat permintaan produk.")
+    st.markdown("Halaman ini menunjukkan hasil pelatihan model untuk memprediksi **kategori** permintaan produk.")
 
     features = ['Age', 'Gender', 'Product Category', 'Price per Unit']
     target = 'Demand'
@@ -140,11 +118,9 @@ elif page == "Pelatihan Model":
     acc_knn = accuracy_score(y_test, y_pred_knn)
     acc_nb = accuracy_score(y_test, y_pred_nb)
     
-    # Membuat confusion matrix lebih mudah dibaca dengan label
     labels = sorted(y.unique())
     cm_knn = pd.DataFrame(confusion_matrix(y_test, y_pred_knn, labels=labels), index=labels, columns=labels)
     cm_nb = pd.DataFrame(confusion_matrix(y_test, y_pred_nb, labels=labels), index=labels, columns=labels)
-
 
     st.header("Hasil Evaluasi Model")
     col1, col2 = st.columns(2)
@@ -160,19 +136,12 @@ elif page == "Pelatihan Model":
         st.write("Confusion Matrix:")
         st.dataframe(cm_nb)
 
-    st.info(f"""
-    **Penjelasan:**
-    - **Akurasi**: Persentase prediksi yang benar.
-    - **Confusion Matrix**: Menunjukkan performa model pada setiap kelas. Baris adalah label aktual, kolom adalah label prediksi.
-    - Model ini dilatih untuk mengklasifikasikan permintaan menjadi **{len(labels)} kategori**: {', '.join(labels)}.
-    """)
-
 # =====================================================================================
 # Halaman 3: Formulir Prediksi
 # =====================================================================================
 elif page == "Formulir Prediksi":
     st.title("📝 Formulir Prediksi Permintaan")
-    st.markdown("Isi formulir di bawah ini untuk mendapatkan prediksi tingkat permintaan produk.")
+    st.markdown("Isi formulir di bawah ini untuk mendapatkan prediksi **kategori permintaan** beserta **estimasi jumlah unit**.")
 
     # Persiapan data dan model untuk prediksi
     features = ['Age', 'Gender', 'Product Category', 'Price per Unit']
@@ -210,19 +179,35 @@ elif page == "Formulir Prediksi":
             'Product Category': [product_category], 'Price per Unit': [price_per_unit]
         })
 
-        input_data['Gender'] = le_gender.transform(input_data['Gender'])
-        input_data['Product Category'] = le_category.transform(input_data['Product Category'])
-        input_data[['Age', 'Price per Unit']] = scaler.transform(input_data[['Age', 'Price per Unit']])
+        input_data_transformed = input_data.copy()
+        input_data_transformed['Gender'] = le_gender.transform(input_data_transformed['Gender'])
+        input_data_transformed['Product Category'] = le_category.transform(input_data_transformed['Product Category'])
+        input_data_transformed[['Age', 'Price per Unit']] = scaler.transform(input_data_transformed[['Age', 'Price per Unit']])
 
-        pred_knn = knn_prod.predict(input_data)[0]
-        pred_nb = nb_prod.predict(input_data)[0]
+        # Lakukan Prediksi Kategori
+        pred_knn_category = knn_prod.predict(input_data_transformed)[0]
+        pred_nb_category = nb_prod.predict(input_data_transformed)[0]
+
+        # REVISI: Dapatkan estimasi kuantitas dari mapping
+        estimasi_knn_qty = int(demand_quantity_map.get(pred_knn_category, 0))
+        estimasi_nb_qty = int(demand_quantity_map.get(pred_nb_category, 0))
 
         st.subheader("📈 Hasil Prediksi")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric(label="Prediksi Model KNN", value=pred_knn)
+            st.metric(
+                label="Prediksi Model KNN", 
+                value=pred_knn_category, 
+                delta=f"Estimasi {estimasi_knn_qty} Unit",
+                delta_color="off" # Warna delta menjadi netral
+            )
         with col2:
-            st.metric(label="Prediksi Model Naive Bayes", value=pred_nb)
-            
+            st.metric(
+                label="Prediksi Model Naive Bayes", 
+                value=pred_nb_category, 
+                delta=f"Estimasi {estimasi_nb_qty} Unit",
+                delta_color="off" # Warna delta menjadi netral
+            )
+        
         st.success("Prediksi berhasil dibuat berdasarkan input yang Anda berikan.")
-        st.warning("**Disclaimer**: Prediksi ini didasarkan pada data historis dan hanya untuk tujuan demonstrasi. Hasil sebenarnya dapat bervariasi.")
+        st.warning("**Disclaimer**: Estimasi jumlah unit adalah nilai median dari data historis untuk kategori yang diprediksi. Ini adalah perkiraan, bukan angka pasti.")
